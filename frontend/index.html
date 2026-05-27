@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reconocedor de Dígitos MNIST</title>
+    <style>
+        * { box-sizing: border-box; user-select: none; }
+        body {
+            background: #1e1e2f;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background: #2d2d44;
+            border-radius: 32px;
+            padding: 24px;
+            box-shadow: 0 20px 35px rgba(0,0,0,0.3);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 30px;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        .draw-area { text-align: center; }
+        canvas {
+            background-color: white;
+            border-radius: 20px;
+            box-shadow: 0 0 0 4px #5a5a7a;
+            cursor: crosshair;
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        button {
+            background: #4a4a6a;
+            border: none;
+            color: white;
+            font-size: 1rem;
+            font-weight: bold;
+            padding: 8px 20px;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        button:hover { background: #6a6a8a; transform: scale(1.02); }
+        .slider-container {
+            background: #3a3a55;
+            padding: 8px 15px;
+            border-radius: 40px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: white;
+            font-weight: bold;
+        }
+        input[type="range"] { width: 150px; cursor: pointer; }
+        .result {
+            background: #1e1e2f;
+            border-radius: 28px;
+            padding: 20px;
+            min-width: 240px;
+            text-align: center;
+            color: white;
+        }
+        .digit {
+            font-size: 100px;
+            font-weight: bold;
+            background: #0a0a14;
+            display: inline-block;
+            width: 140px;
+            border-radius: 40px;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+        .confidence { font-size: 18px; margin: 5px 0; }
+        .prob-bar {
+            background: #2d2d44;
+            border-radius: 20px;
+            margin: 8px 0;
+            overflow: hidden;
+        }
+        .prob-fill {
+            background: #4c9aff;
+            width: 0%;
+            height: 24px;
+            line-height: 24px;
+            padding-left: 8px;
+            color: white;
+            font-size: 12px;
+            border-radius: 20px;
+            transition: width 0.2s;
+        }
+        .history {
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 14px;
+            text-align: left;
+        }
+        .history span {
+            display: inline-block;
+            background: #2d2d44;
+            margin: 4px;
+            padding: 4px 10px;
+            border-radius: 20px;
+        }
+        h3 { margin-top: 0; }
+        @media (max-width: 700px) { .container { flex-direction: column; align-items: center; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="draw-area">
+        <canvas id="canvas" width="360" height="360"></canvas>
+        <div class="controls">
+            <div class="slider-container">
+                🖌️ Grosor
+                <input type="range" id="brushSize" min="6" max="40" value="18" step="1">
+                <span id="sizeValue">18</span>
+            </div>
+            <button id="clearBtn">🧽 LIMPIAR</button>
+            <button id="predictBtn">🔍 PREDECIR</button>
+        </div>
+        <p style="color:#aaa; margin-top:12px;">Dibuja un dígito (0-9) sobre fondo BLANCO con trazo NEGRO</p>
+    </div>
+
+    <div class="result">
+        <h3>🔢 El modelo detectó</h3>
+        <div class="digit" id="predDigit">?</div>
+        <div class="confidence" id="confidence">Confianza: --</div>
+        <div id="probabilities"></div>
+        <div class="history">
+            <strong>📜 Historial de predicciones</strong><br>
+            <div id="historyList"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let drawing = false;
+
+    // Fondo blanco, trazo negro
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = 'black';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    function setBrushSize() {
+        const size = document.getElementById('brushSize').value;
+        ctx.lineWidth = parseInt(size);
+        document.getElementById('sizeValue').innerText = size;
+    }
+    setBrushSize();
+    document.getElementById('brushSize').addEventListener('input', setBrushSize);
+
+    function startDrawing(e) {
+        drawing = true;
+        const pos = getMousePos(e);
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+    }
+    function draw(e) {
+        if (!drawing) return;
+        const pos = getMousePos(e);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+    }
+    function stopDrawing() { drawing = false; ctx.beginPath(); }
+
+    function getMousePos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        let clientX, clientY;
+        if (e.touches) {
+            clientX = e.touches[0].clientX;
+            clientY = e.touches[0].clientY;
+        } else {
+            clientX = e.clientX;
+            clientY = e.clientY;
+        }
+        let x = (clientX - rect.left) * scaleX;
+        let y = (clientY - rect.top) * scaleY;
+        x = Math.min(Math.max(0, x), canvas.width);
+        y = Math.min(Math.max(0, y), canvas.height);
+        return { x, y };
+    }
+
+    canvas.addEventListener('mousedown', startDrawing);
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('mouseup', stopDrawing);
+    canvas.addEventListener('mouseleave', stopDrawing);
+    canvas.addEventListener('touchstart', startDrawing);
+    canvas.addEventListener('touchmove', draw);
+    canvas.addEventListener('touchend', stopDrawing);
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = 'black';
+        document.getElementById('predDigit').innerText = '?';
+        document.getElementById('confidence').innerHTML = 'Confianza: --';
+        document.getElementById('probabilities').innerHTML = '';
+    });
+    
+    const API_URL = 'https://mnist-api.onrender.com/predict';
+    //const API_URL = 'http://localhost:8000/predict';
+    let lastTimeout = null;
+
+    async function predictImage() {
+        return new Promise((resolve) => {
+            canvas.toBlob(async (blob) => {
+                const formData = new FormData();
+                formData.append('file', blob, 'digit.png');
+                try {
+                    const response = await fetch(API_URL, { method: 'POST', body: formData });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    resolve(data);
+                } catch (err) {
+                    console.error('Error en la predicción:', err);
+                    resolve(null);
+                }
+            }, 'image/png');
+        });
+    }
+
+    async function updatePrediction() {
+        const data = await predictImage();
+        if (!data) return;
+        document.getElementById('predDigit').innerText = data.clase;
+        const prob = (data.probabilidad * 100).toFixed(2);
+        document.getElementById('confidence').innerHTML = `Confianza: ${prob}%`;
+
+        const probsDiv = document.getElementById('probabilities');
+        probsDiv.innerHTML = '<strong>📊 Probabilidad por dígito</strong>';
+        for (let i = 0; i <= 9; i++) {
+            const p = data.todas[i] * 100;
+            const barDiv = document.createElement('div');
+            barDiv.className = 'prob-bar';
+            const fillDiv = document.createElement('div');
+            fillDiv.className = 'prob-fill';
+            fillDiv.style.width = `${p}%`;
+            fillDiv.innerText = `${i}: ${p.toFixed(1)}%`;
+            barDiv.appendChild(fillDiv);
+            probsDiv.appendChild(barDiv);
+        }
+
+        const historyDiv = document.getElementById('historyList');
+        const newEntry = document.createElement('span');
+        newEntry.innerText = `${data.clase} ${prob}%`;
+        historyDiv.prepend(newEntry);
+        if (historyDiv.children.length > 12) historyDiv.removeChild(historyDiv.lastChild);
+    }
+
+    canvas.addEventListener('mouseup', () => {
+        if (lastTimeout) clearTimeout(lastTimeout);
+        lastTimeout = setTimeout(updatePrediction, 400);
+    });
+    canvas.addEventListener('touchend', () => {
+        if (lastTimeout) clearTimeout(lastTimeout);
+        lastTimeout = setTimeout(updatePrediction, 400);
+    });
+    document.getElementById('predictBtn').addEventListener('click', updatePrediction);
+
+    window.addEventListener('load', async () => {
+        try {
+            const res = await fetch('http://localhost:8000/');
+            if (res.ok) console.log('✅ API conectada');
+            else console.warn('⚠️ API no responde');
+        } catch(e) { console.warn('⚠️ No se pudo conectar a la API'); }
+    });
+</script>
+</body>
+</html>
